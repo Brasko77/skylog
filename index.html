@@ -330,12 +330,36 @@ td .tail{color:var(--accent-cyan);font-family:'Space Mono',monospace;font-size:1
   </div>
 
   <div class="panel">
-    <div class="section-header">Data Management</div>
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">All data is stored locally in your browser. Export regularly to keep a backup.</p>
+    <div class="section-header">Backup & Restore</div>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.6;">
+      Export a full backup of your SkyLog data as a JSON file. Use it to move between devices, browsers, or just keep a safe copy. The backup includes all flights, your aircraft fleet, and your API key.
+    </p>
     <div class="btn-row" style="margin-top:0;">
-      <button class="btn btn-secondary" onclick="exportCSV()">Export All Flights (CSV)</button>
-      <button class="btn btn-danger" onclick="promptClearAll()">Clear All Flight Data</button>
+      <button class="btn btn-primary" onclick="exportBackup()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Export Full Backup
+      </button>
+      <button class="btn btn-secondary" onclick="exportCSV()">Export Flights as CSV</button>
     </div>
+
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px;">
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.6;">
+        Restore from a SkyLog backup file. This will <strong>replace</strong> all current data with the backup contents.
+      </p>
+      <div class="import-zone" id="restoreZone" onclick="document.getElementById('restoreFile').click();" style="padding:24px;border-color:var(--accent-blue);">
+        <input type="file" id="restoreFile" accept=".json" onchange="handleRestoreUpload(event)" style="display:none;">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="1.5" style="margin-bottom:8px;"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+        <h3 style="font-size:14px;">Click to import a SkyLog backup (.json)</h3>
+        <p style="font-size:12px;">This will replace all current data</p>
+      </div>
+      <div id="restorePreview" style="display:none;margin-top:16px;"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-header">Danger Zone</div>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Clear all flight data from this browser. Export a backup first!</p>
+    <button class="btn btn-danger" onclick="promptClearAll()">Clear All Flight Data</button>
     <div id="clearConfirm" style="display:none;margin-top:16px;padding:16px;background:var(--accent-red-dim);border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius);">
       <p style="font-size:13px;color:var(--accent-red);margin-bottom:12px;"><strong>Are you sure?</strong> This will permanently delete all flight entries. This cannot be undone.</p>
       <div class="btn-row" style="margin-top:0;"><button class="btn btn-danger" onclick="clearAllData()">Yes, Delete Everything</button><button class="btn btn-secondary" onclick="document.getElementById('clearConfirm').style.display='none';">Cancel</button></div>
@@ -345,7 +369,7 @@ td .tail{color:var(--accent-cyan);font-family:'Space Mono',monospace;font-size:1
   <div class="panel">
     <div class="section-header">About SkyLog</div>
     <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;">
-      SkyLog v3.1 — Built by Donald Mayer & Claude<br>
+      SkyLog v3.2 — Built by Donald Mayer & Claude<br>
       Digital pilot logbook with AI-powered logbook page scanning.<br>
       All data stored locally in your browser. Your API key never leaves your device.
     </p>
@@ -399,6 +423,115 @@ async function testApiKey(){
 }
 function promptClearAll(){document.getElementById('clearConfirm').style.display='block';}
 function clearAllData(){flights=[];sv(SK.f,flights);document.getElementById('clearConfirm').style.display='none';showToast('All flight data cleared.');renderDashboard();}
+
+// ===== BACKUP & RESTORE =====
+function exportBackup(){
+  const backup={
+    _skylog_version:'3.2',
+    _exported: new Date().toISOString(),
+    _summary:{flights:flights.length,aircraft:aircraft.length},
+    flights: flights,
+    aircraft: aircraft,
+    apiKey: getApiKey()||null
+  };
+  const json=JSON.stringify(backup, null, 2);
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=`skylog-backup-${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Backup exported: ${flights.length} flights, ${aircraft.length} aircraft`);
+}
+
+function handleRestoreUpload(e){
+  const file=e.target.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(ev){
+    try{
+      const data=JSON.parse(ev.target.result);
+      // Validate it looks like a SkyLog backup
+      if(!data.flights||!Array.isArray(data.flights)){
+        showToast('Invalid backup file — no flight data found.','error');return;
+      }
+      // Show preview before restoring
+      const preview=document.getElementById('restorePreview');
+      const flightCount=data.flights.length;
+      const acCount=(data.aircraft||[]).length;
+      const hasKey=!!data.apiKey;
+      const exported=data._exported?new Date(data._exported).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'Unknown';
+      let dateRange='';
+      if(flightCount>0){
+        const dates=data.flights.map(f=>f.date).filter(Boolean).sort();
+        dateRange=dates[0]+' to '+dates[dates.length-1];
+      }
+      preview.style.display='block';
+      preview.innerHTML=`
+        <div style="padding:16px;background:var(--bg-input);border:1px solid var(--accent-blue);border-radius:var(--radius);">
+          <h4 style="font-size:14px;margin-bottom:12px;color:var(--accent-blue);">Backup Contents</h4>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:16px;">
+            <div style="padding:8px 12px;background:var(--bg-card);border-radius:6px;">
+              <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Flights</div>
+              <div style="font-family:'Space Mono',monospace;font-size:18px;margin-top:2px;">${flightCount}</div>
+            </div>
+            <div style="padding:8px 12px;background:var(--bg-card);border-radius:6px;">
+              <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Aircraft</div>
+              <div style="font-family:'Space Mono',monospace;font-size:18px;margin-top:2px;">${acCount}</div>
+            </div>
+            <div style="padding:8px 12px;background:var(--bg-card);border-radius:6px;">
+              <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">API Key</div>
+              <div style="font-size:14px;margin-top:2px;">${hasKey?'✓ Included':'Not included'}</div>
+            </div>
+            <div style="padding:8px 12px;background:var(--bg-card);border-radius:6px;">
+              <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Date Range</div>
+              <div style="font-size:12px;font-family:'Space Mono',monospace;margin-top:4px;">${dateRange||'N/A'}</div>
+            </div>
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Exported: ${exported}${data._skylog_version?' · SkyLog v'+data._skylog_version:''}</p>
+          <p style="font-size:13px;color:var(--accent-amber);margin-bottom:16px;"><strong>⚠ Warning:</strong> Restoring will replace ALL current data in this browser.</p>
+          <div class="btn-row" style="margin-top:0;">
+            <button class="btn btn-primary" onclick="executeRestore()">Restore This Backup</button>
+            <button class="btn btn-secondary" onclick="cancelRestore()">Cancel</button>
+          </div>
+        </div>`;
+      // Stash the data for restore
+      window._pendingRestore=data;
+    }catch(err){
+      showToast('Could not read file: '+err.message,'error');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function executeRestore(){
+  const data=window._pendingRestore;
+  if(!data){showToast('No backup data loaded.','error');return;}
+  // Restore flights
+  flights=data.flights;
+  sv(SK.f,flights);
+  // Restore aircraft
+  if(data.aircraft&&data.aircraft.length){
+    aircraft=data.aircraft;
+    sv(SK.a,aircraft);
+  }
+  // Restore API key
+  if(data.apiKey){
+    localStorage.setItem('skylog_api_key',data.apiKey);
+  }
+  window._pendingRestore=null;
+  document.getElementById('restorePreview').style.display='none';
+  document.getElementById('restoreFile').value='';
+  showToast(`Restored: ${flights.length} flights, ${aircraft.length} aircraft`);
+  renderDashboard();
+  loadApiKeyToInput();
+}
+
+function cancelRestore(){
+  window._pendingRestore=null;
+  document.getElementById('restorePreview').style.display='none';
+  document.getElementById('restoreFile').value='';
+}
 if(!aircraft.length){aircraft=[{id:gid(),type:'C210',model:'Cessna 210L Centurion',catClass:'ASEL',hp:true,complex:true,tw:false,taa:false},{id:gid(),type:'C172',model:'Cessna 172 Skyhawk',catClass:'ASEL',hp:false,complex:false,tw:false,taa:false},{id:gid(),type:'PA28',model:'Piper PA-28 Cherokee',catClass:'ASEL',hp:false,complex:false,tw:false,taa:false},{id:gid(),type:'C182',model:'Cessna 182 Skylane',catClass:'ASEL',hp:true,complex:false,tw:false,taa:false}];sv(SK.a,aircraft);}
 
 // ===== NAV =====
