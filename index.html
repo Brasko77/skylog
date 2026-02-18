@@ -432,6 +432,27 @@ function confirmDelete(){flights=flights.filter(f=>f.id!==pendingDeleteId);sv(SK
 function closeModal(){document.getElementById('deleteModal').classList.remove('show');pendingDeleteId=null;}
 
 // ===== SCAN LOGBOOK (AI VISION) =====
+// Image resize helper - scales down large photos to keep API payload reasonable
+function resizeImage(file, maxDim) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => reject(new Error('Could not load image'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 document.getElementById('scanZone').addEventListener('click',function(e){if(e.target.tagName!=='INPUT')document.getElementById('scanFile').click();});
 
 async function handleScanUpload(e){
@@ -439,11 +460,21 @@ async function handleScanUpload(e){
   const preview=document.getElementById('scanPreview');preview.classList.add('active');
   document.getElementById('scanImagePreview').src=URL.createObjectURL(file);
   const status=document.getElementById('scanStatus');
-  status.style.display='flex';status.innerHTML='<div class="spinner"></div><span>Analyzing your logbook page with AI vision... This may take 15-30 seconds.</span>';
+  status.style.display='flex';status.innerHTML='<div class="spinner"></div><span>Preparing image...</span>';
   document.getElementById('scanResults').innerHTML='';document.getElementById('scanActions').style.display='none';
 
-  const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error('Read failed'));r.readAsDataURL(file);});
-  const mediaType=file.type||'image/jpeg';
+  // Resize image to max 1600px on longest side to keep API payload manageable
+  let base64, mediaType='image/jpeg';
+  try {
+    const resized = await resizeImage(file, 1600);
+    base64 = resized.split(',')[1];
+    status.innerHTML='<div class="spinner"></div><span>Analyzing your logbook page with AI vision... This may take 15-30 seconds.</span>';
+  } catch(err) {
+    // Fallback to raw file if resize fails
+    base64 = await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error('Read failed'));r.readAsDataURL(file);});
+    mediaType=file.type||'image/jpeg';
+    status.innerHTML='<div class="spinner"></div><span>Analyzing your logbook page with AI vision... This may take 15-30 seconds.</span>';
+  }
 
   try{
     const apiKey=getApiKey();
@@ -481,6 +512,14 @@ RULES:
 - Distinguish 0 (written zero) from null (blank)
 - Return ONLY a JSON array. No markdown, no explanation.
 - Empty page = return []`}]}]})});
+    if(!resp.ok){
+      const errBody=await resp.text();
+      let errMsg='API error (HTTP '+resp.status+')';
+      try{const ej=JSON.parse(errBody);errMsg=ej.error?.message||errMsg;}catch{}
+      if(resp.status===529)errMsg='Anthropic API is temporarily overloaded. Please try again in a minute.';
+      if(resp.status===413)errMsg='Image too large. Try a lower resolution photo.';
+      throw new Error(errMsg);
+    }
     const data=await resp.json();
     if(data.error)throw new Error(data.error.message||'API error');
     const text=data.content.map(c=>c.text||'').join('');
